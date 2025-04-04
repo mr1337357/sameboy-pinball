@@ -10,11 +10,55 @@ const GB_palette_t GB_PALETTE_DMG  = {{{0x08, 0x18, 0x10}, {0x39, 0x61, 0x39}, {
 const GB_palette_t GB_PALETTE_MGB  = {{{0x07, 0x10, 0x0E}, {0x3A, 0x4C, 0x3A}, {0x81, 0x8D, 0x66}, {0xC2, 0xCE, 0x93}, {0xCF, 0xDA, 0xAC}}};
 const GB_palette_t GB_PALETTE_GBL  = {{{0x0A, 0x1C, 0x15}, {0x35, 0x78, 0x62}, {0x56, 0xB4, 0x95}, {0x7F, 0xE2, 0xC3}, {0x91, 0xEA, 0xD0}}};
 
+enum
+{
+	PINBALL_HACK_SCREEN_UP = 0,
+	PINBALL_HACK_SCREEN_DOWN = 1,
+	PINBALL_HACK_SCREEN_NONE = 2,
+} pinball_hack_screen = PINBALL_HACK_SCREEN_DOWN;
+
 uint8_t pinball_hack_offset = 144;
 
 void pinball_hack_ball_is_up(bool up)
 {
-	pinball_hack_offset = (!up) * 144;
+	static uint8_t counter = 0;
+	if(counter)
+	{
+		counter--;
+		return;
+	}
+	else
+	{
+		switch(pinball_hack_screen)
+		{
+			case PINBALL_HACK_SCREEN_UP:
+				if(!up)
+				{
+					counter = 5;
+					pinball_hack_screen = PINBALL_HACK_SCREEN_NONE;
+					pinball_hack_offset = 144;
+				}
+				break;
+			case PINBALL_HACK_SCREEN_DOWN:
+				if(up)
+				{
+					counter = 5;
+					pinball_hack_screen = PINBALL_HACK_SCREEN_NONE;
+					pinball_hack_offset = 0;
+				}
+				break;
+			case PINBALL_HACK_SCREEN_NONE:
+				if(up)
+				{
+					pinball_hack_screen = PINBALL_HACK_SCREEN_UP;
+				}
+				else
+				{
+					pinball_hack_screen = PINBALL_HACK_SCREEN_DOWN;
+				}
+				break;
+		}
+	}
 }
 
 void GB_update_dmg_palette(GB_gameboy_t *gb)
@@ -170,6 +214,21 @@ static void fifo_overlay_object_row(GB_fifo_t *fifo, uint8_t lower, uint8_t uppe
 #define BORDERED_HEIGHT 224
 #define VIRTUAL_LINES (LCDC_PERIOD / LINE_LENGTH) // = 154
 
+uint32_t *pinball_hack_generate_offset(GB_gameboy_t *gb)
+{
+	if(pinball_hack_screen == PINBALL_HACK_SCREEN_NONE)
+	{
+		return gb->screen;
+	}
+    if (gb->border_mode != GB_BORDER_ALWAYS) {
+        return gb->screen + gb->lcd_x + (gb->current_line + pinball_hack_offset) * WIDTH;
+    }
+    else {
+        return gb->screen + gb->lcd_x + (gb->current_line + pinball_hack_offset) * BORDERED_WIDTH + (BORDERED_WIDTH - WIDTH) / 2 + (BORDERED_HEIGHT - LINES) / 2 * BORDERED_WIDTH;
+    }
+	return 0;
+}
+
 typedef struct __attribute__((packed)) {
     uint8_t y;
     uint8_t x;
@@ -181,11 +240,11 @@ void GB_display_vblank(GB_gameboy_t *gb, GB_vblank_type_t type)
 {
 	uint16_t ballpos;
 	ballpos = GB_safe_read_memory(gb,0xD4AC);
-	if(ballpos < 2)
+	if(ballpos < 6)
 	{
-		pinball_hack_ball_is_up(!ballpos);
+		pinball_hack_ball_is_up(!(ballpos & 1));
 	}
-	printf("ballpos %04hX\n",ballpos);
+	//printf("ballpos %04hX\n",ballpos);
     gb->vblank_just_occured = true;
     gb->cycles_since_vblank_callback = 0;
     gb->lcd_disabled_outside_of_vblank = false;
@@ -284,7 +343,7 @@ void GB_display_vblank(GB_gameboy_t *gb, GB_vblank_type_t type)
                                         ((gb->borrowed_border.tiles[base + 1] & bit)  ? 2 : 0) |
                                         ((gb->borrowed_border.tiles[base + 16] & bit) ? 4 : 0) |
                                         ((gb->borrowed_border.tiles[base + 17] & bit) ? 8 : 0);
-                        uint32_t *output = gb->screen + tile_x * 8 + x + (tile_y * 8 + y + pinball_hack_offset) * 256;
+                        uint32_t *output = gb->screen;// + tile_x * 8 + x + (tile_y * 8 + y + pinball_hack_offset) * 256;
                         if (color == 0) {
                             *output = border_colors[0];
                         }
@@ -724,12 +783,7 @@ static void render_pixel_if_possible(GB_gameboy_t *gb)
     uint8_t icd_pixel = 0;
     uint32_t *dest = NULL;
     if (!gb->sgb) {
-        if (gb->border_mode != GB_BORDER_ALWAYS) {
-            dest = gb->screen + gb->lcd_x + (gb->current_line + pinball_hack_offset) * WIDTH;
-        }
-        else {
-            dest = gb->screen + gb->lcd_x + (gb->current_line + pinball_hack_offset) * BORDERED_WIDTH + (BORDERED_WIDTH - WIDTH) / 2 + (BORDERED_HEIGHT - LINES) / 2 * BORDERED_WIDTH;
-        }
+		dest = pinball_hack_generate_offset(gb);
     }
     
     {
@@ -1226,10 +1280,16 @@ static void render_line(GB_gameboy_t *gb)
     typeof(object_buffer[0]) *object_buffer_pointer = object_buffer + 8;
     if (gb->border_mode == GB_BORDER_ALWAYS) {
         p += (BORDERED_WIDTH - (WIDTH)) / 2 + BORDERED_WIDTH * (BORDERED_HEIGHT - LINES) / 2;
-        p += BORDERED_WIDTH * (gb->current_line + pinball_hack_offset);
+		if(pinball_hack_screen != PINBALL_HACK_SCREEN_NONE)
+		{
+	        p += BORDERED_WIDTH * (gb->current_line + pinball_hack_offset);
+		}
     }
     else {
-        p += WIDTH * (gb->current_line + pinball_hack_offset);
+		if(pinball_hack_screen != PINBALL_HACK_SCREEN_NONE)
+		{
+        	p += WIDTH * (gb->current_line + pinball_hack_offset);
+		}
     }
     
     if (unlikely(gb->background_disabled) || (!gb->cgb_mode && !(gb->io_registers[GB_IO_LCDC] & GB_LCDC_BG_EN))) {
@@ -1378,7 +1438,10 @@ static void render_line_sgb(GB_gameboy_t *gb)
     
     uint8_t *restrict p = gb->sgb->screen_buffer;
     typeof(object_buffer[0]) *object_buffer_pointer = object_buffer + 8;
-    p += WIDTH * (gb->current_line + pinball_hack_offset);
+	if(pinball_hack_screen != PINBALL_HACK_SCREEN_NONE)
+	{
+	    p += WIDTH * (gb->current_line + pinball_hack_offset);
+	}
     
     if (unlikely(gb->background_disabled) || (!gb->cgb_mode && !(gb->io_registers[GB_IO_LCDC] & GB_LCDC_BG_EN))) {
         for (unsigned i = 160; i--;) {
@@ -1712,12 +1775,7 @@ void GB_display_run(GB_gameboy_t *gb, unsigned cycles, bool force)
         if (gb->current_line < LINES && !GB_is_sgb(gb) && !gb->disable_rendering) {
             GB_log(gb, "The ROM is preventing line %d from fully rendering, this could damage a real device's LCD display.\n", gb->current_line);
             uint32_t *dest = NULL;
-            if (gb->border_mode != GB_BORDER_ALWAYS) {
-                dest = gb->screen + gb->lcd_x + (gb->current_line + pinball_hack_offset) * WIDTH;
-            }
-            else {
-                dest = gb->screen + gb->lcd_x + (gb->current_line + pinball_hack_offset) * BORDERED_WIDTH + (BORDERED_WIDTH - WIDTH) / 2 + (BORDERED_HEIGHT - LINES) / 2 * BORDERED_WIDTH;
-            }
+			dest = pinball_hack_generate_offset(gb);
             uint32_t color = GB_is_cgb(gb)? GB_convert_rgb15(gb, 0x7FFF, false) : gb->background_palettes_rgb[4];
             while (gb->lcd_x < 160) {
                 *(dest++) = color;
@@ -2055,12 +2113,7 @@ skip_slow_mode_3:
             while (gb->lcd_x != 160 && !gb->disable_rendering && gb->screen && !gb->sgb) {
                 /* Oh no! The PPU and LCD desynced! Fill the rest of the line with the last color. */
                 uint32_t *dest = NULL;
-                if (gb->border_mode != GB_BORDER_ALWAYS) {
-                    dest = gb->screen + gb->lcd_x + (gb->current_line + pinball_hack_offset) * WIDTH;
-                }
-                else {
-                    dest = gb->screen + gb->lcd_x + (gb->current_line + pinball_hack_offset) * BORDERED_WIDTH + (BORDERED_WIDTH - WIDTH) / 2 + (BORDERED_HEIGHT - LINES) / 2 * BORDERED_WIDTH;
-                }
+                dest = pinball_hack_generate_offset(gb);
                 *dest = (gb->lcd_x == 0)? gb->background_palettes_rgb[0] : dest[-1];
                 gb->lcd_x++;
 
